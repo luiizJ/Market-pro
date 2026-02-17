@@ -43,3 +43,52 @@ Eliminação de API Routes tradicionais em favor de **Server Actions**. Toda a l
 ### 4. Integração "Click-to-WhatsApp"
 
 O checkout gera um payload formatado automaticamente e redireciona o cliente para o WhatsApp do vendedor com o resumo estruturado do pedido, facilitando o fechamento B2B.
+
+## 🔧 Como rodar o projeto localmente
+
+Siga os passos abaixo para ter a aplicação rodando na sua máquina:
+
+### Pré-requisitos
+
+- Node.js (v18+)
+- NPM ou Yarn
+- PostgreSQL (Local ou Docker)
+
+### 1. Clone o repositório
+
+```bash
+git clone [https://github.com/luiizJ/Market-pro]
+cd Market-pro
+```
+
+### 2. Instale as dependências
+
+```bash
+npm install
+```
+
+### 3. Configure as Variáveis de Ambiente
+
+```bash
+Crie um arquivo .env na raiz do projeto baseando-se no .env.example (se houver) ou adicione as seguintes chaves:
+DATABASE_URL="postgresql://user:password@host:port/db_name"
+```
+
+### 4. Configure o Banco de Dados (Prisma)
+
+```bash
+npx prisma generate
+npx prisma db push
+npx prisma db seed
+```
+
+### 5. Inicie o Servidor
+
+```bash
+npm run dev
+Acesse http://localhost:3000 no seu navegador.
+```
+
+## 🤝 Contato
+
+- **Luiz Janampa Full-stack Developer**
