@@ -3,18 +3,19 @@
 
 import { db } from "@/app/db";
 import { orderItems, products, variants } from "@/app/db/schema";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
-// Tipo esperado do formulário
+// 1. INTERFACE AJUSTADA (O 'id' é opcional para suportar novas variantes)
 interface ProductFormData {
   name: string;
   description: string;
   categoryId: string;
-  image: string; // Por enquanto URL, depois podemos por Upload
+  image: string;
   isPromo: boolean;
   variants: {
+    id?: string; // 👈 ESSENCIAL: O '?' permite que variantes novas não tenham ID
     name: string;
     price: string;
     stock: number;
@@ -23,96 +24,45 @@ interface ProductFormData {
 
 export async function createProduct(data: ProductFormData) {
   try {
-    // Validação básica
     if (!data.name || !data.categoryId || data.variants.length === 0) {
-      return {
-        success: false,
-        error:
-          "Preencha os campos obrigatórios e adicione pelo menos uma variante.",
-      };
+      return { success: false, error: "Preencha os campos obrigatórios." };
     }
 
-    // Transação: Salva Produto e Variantes juntos
     await db.transaction(async (tx) => {
-      // 1. Cria o Produto
       const [newProduct] = await tx
         .insert(products)
         .values({
           name: data.name,
           description: data.description,
           categoryId: data.categoryId,
-          image: data.image || "📦", // Emoji padrão se não tiver imagem
+          image: data.image || "📦",
           isPromo: data.isPromo,
         })
         .returning({ id: products.id });
 
-      // 2. Cria as Variantes vinculadas
-      if (data.variants.length > 0) {
-        await tx.insert(variants).values(
-          data.variants.map((v) => ({
-            productId: newProduct.id,
-            name: v.name,
-            price: v.price.replace(",", "."), // Corrige vírgula se vier
-            stock: v.stock,
-          }))
-        );
-      }
-    });
-
-    // Atualiza as páginas
-    revalidatePath("/admin/dashboard/products");
-    revalidatePath("/"); // Atualiza a home da loja também
-  } catch (error) {
-    console.error("Erro ao criar produto:", error);
-    return { success: false, error: "Erro ao salvar no banco de dados." };
-  }
-
-  // Redireciona fora do try/catch (Padrão do Next.js)
-  redirect("/admin/dashboard/products");
-}
-
-// Função para deletar (Bônus)
-export async function deleteProduct(productId: string) {
-  try {
-    await db.transaction(async (tx) => {
-      // 1. Busca os IDs das variantes desse produto
-      const productVariants = await tx
-        .select({ id: variants.id })
-        .from(variants)
-        .where(eq(variants.productId, productId));
-
-      const variantIds = productVariants.map((v) => v.id);
-
-      // 2. DESVINCULA DOS PEDIDOS (Solução do Erro Foreign Key)
-      // Se houver variantes, setamos o variantId como NULL na tabela order_items
-      // Isso mantém o histórico de vendas (nome, preço), mas permite deletar o produto do catálogo.
-      if (variantIds.length > 0) {
-        await tx
-          .update(orderItems)
-          .set({ variantId: null }) // Remove o link
-          .where(inArray(orderItems.variantId, variantIds));
-      }
-
-      // 3. Agora podemos deletar as variantes tranquilamente
-      await tx.delete(variants).where(eq(variants.productId, productId));
-
-      // 4. E finalmente deletar o produto pai
-      await tx.delete(products).where(eq(products.id, productId));
+      await tx.insert(variants).values(
+        data.variants.map((v) => ({
+          productId: newProduct.id,
+          name: v.name,
+          price: v.price.replace(",", "."),
+          stock: v.stock,
+        }))
+      );
     });
 
     revalidatePath("/admin/dashboard/products");
     revalidatePath("/");
-    return { success: true };
-  } catch (e: any) {
-    console.error("Erro ao deletar:", e);
-    return { success: false, error: "Erro ao deletar: " + e.message };
+  } catch (error) {
+    console.error("Erro ao criar produto:", error);
+    return { success: false, error: "Erro ao salvar no banco." };
   }
+  redirect("/admin/dashboard/products");
 }
 
 export async function updateProduct(productId: string, data: ProductFormData) {
   try {
     await db.transaction(async (tx) => {
-      // 1. Atualiza dados básicos do produto
+      // 1. Atualiza dados básicos
       await tx
         .update(products)
         .set({
@@ -124,19 +74,51 @@ export async function updateProduct(productId: string, data: ProductFormData) {
         })
         .where(eq(products.id, productId));
 
-      // 2. Atualiza variantes (Estratégia MVP: Deletar todas e recriar)
-      // Isso simplifica muito a lógica de "qual variante mudou, qual foi deletada".
-      await tx.delete(variants).where(eq(variants.productId, productId));
+      // 2. BUSCAR VARIANTES ATUAIS NO BANCO
+      const dbVariants = await tx
+        .select({ id: variants.id })
+        .from(variants)
+        .where(eq(variants.productId, productId));
 
-      if (data.variants.length > 0) {
-        await tx.insert(variants).values(
-          data.variants.map((v) => ({
-            productId: productId,
-            name: v.name,
-            price: v.price.replace(",", "."),
-            stock: v.stock,
-          }))
-        );
+      const dbVariantIds = dbVariants.map((v) => v.id);
+
+      // IDs que vieram no formulário e que já existem
+      const incomingVariantIds = data.variants
+        .map((v) => v.id)
+        .filter((id): id is string => !!id);
+
+      // 3. IDENTIFICAR O QUE DELETAR (Está no DB mas não veio no Form)
+      const idsToDelete = dbVariantIds.filter(
+        (id) => !incomingVariantIds.includes(id)
+      );
+
+      if (idsToDelete.length > 0) {
+        // Soft Unlink nos pedidos para não quebrar a Foreign Key
+        await tx
+          .update(orderItems)
+          .set({ variantId: null })
+          .where(inArray(orderItems.variantId, idsToDelete));
+
+        // Deleta as variantes que saíram da lista
+        await tx.delete(variants).where(inArray(variants.id, idsToDelete));
+      }
+
+      // 4. UPSERT (Update ou Insert) NAS VARIANTES QUE FICARAM/ENTRARAM
+      for (const v of data.variants) {
+        const payload = {
+          productId: productId,
+          name: v.name,
+          price: v.price.replace(",", "."),
+          stock: v.stock,
+        };
+
+        if (v.id) {
+          // Já existe? Dá Update
+          await tx.update(variants).set(payload).where(eq(variants.id, v.id));
+        } else {
+          // Não tem ID? É nova, dá Insert
+          await tx.insert(variants).values(payload);
+        }
       }
     });
 
@@ -146,6 +128,35 @@ export async function updateProduct(productId: string, data: ProductFormData) {
     console.error("Erro ao atualizar:", error);
     return { success: false, error: "Erro ao atualizar produto." };
   }
-
   redirect("/admin/dashboard/products");
+}
+
+export async function deleteProduct(productId: string) {
+  try {
+    await db.transaction(async (tx) => {
+      const productVariants = await tx
+        .select({ id: variants.id })
+        .from(variants)
+        .where(eq(variants.productId, productId));
+
+      const variantIds = productVariants.map((v) => v.id);
+
+      if (variantIds.length > 0) {
+        await tx
+          .update(orderItems)
+          .set({ variantId: null })
+          .where(inArray(orderItems.variantId, variantIds));
+      }
+
+      await tx.delete(variants).where(eq(variants.productId, productId));
+      await tx.delete(products).where(eq(products.id, productId));
+    });
+
+    revalidatePath("/admin/dashboard/products");
+    revalidatePath("/");
+    return { success: true };
+  } catch (e: any) {
+    console.error("Erro ao deletar:", e);
+    return { success: false, error: "Erro ao deletar produto." };
+  }
 }

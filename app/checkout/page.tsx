@@ -110,7 +110,12 @@ export default function CheckoutPage() {
       {/* Header Simples */}
       {/* MUDANÇA: bg-white -> bg-card, border-slate-200 -> border-border */}
       <div className="bg-card p-4 border-b border-border sticky top-0 z-20 flex items-center gap-2">
-        <Button variant="ghost" size="icon" onClick={() => router.back()}>
+        <Button
+          className="text-white"
+          variant="default"
+          size="icon"
+          onClick={() => router.back()}
+        >
           <ChevronLeft className="w-6 h-6" />
         </Button>
         <h1 className="font-bold text-lg">Finalizar Pedido</h1>
@@ -129,7 +134,7 @@ export default function CheckoutPage() {
               <div
                 key={`${item.productId}-${item.variantId}`}
                 // MUDANÇA: border-slate-100 -> border-border
-                className="flex justify-between items-start pb-4 border-b border-border last:border-0 last:pb-0"
+                className="flex justify-between items-start pb-4 border-b border-border last:border-0 last:pb-0 "
               >
                 <div className="flex gap-3">
                   {/* MUDANÇA: bg-slate-100 -> bg-muted */}
@@ -173,8 +178,8 @@ export default function CheckoutPage() {
 
         {/* Formulário de Entrega */}
         {/* MUDANÇA: bg-white -> bg-card, border-slate-200 -> border-border */}
-        <Card className="p-4 bg-card border-border space-y-4">
-          <h2 className="text-sm font-bold uppercase text-muted-foreground mb-1 flex items-center gap-2">
+        <Card className="p-4 bg-card border-border space-y-4  text-white ">
+          <h2 className="text-sm font-bold uppercase text-muted-foreground mb-2 flex items-center gap-2">
             <Truck className="w-4 h-4" /> Dados de Entrega
           </h2>
 
@@ -183,7 +188,7 @@ export default function CheckoutPage() {
             value={formData.name}
             onChange={(e) => setFormData({ ...formData, name: e.target.value })}
             // MUDANÇA: classes de input já são tratadas no componente Input, mas garantimos bg-muted/50 se necessário
-            className="bg-muted/50 border-transparent focus:bg-background focus:border-primary"
+            className="bg-muted/50 border-transparent focus:bg-background focus:border-primary "
             error={errors.name}
           />
 
@@ -220,7 +225,7 @@ export default function CheckoutPage() {
 
         {/* Pagamento */}
         <Card className="p-4 bg-card border-border space-y-3">
-          <h2 className="text-sm font-bold uppercase text-muted-foreground mb-1 flex items-center gap-2">
+          <h2 className="text-sm font-bold uppercase text-muted-foreground mb-2 flex items-center gap-2">
             <CreditCard className="w-4 h-4" /> Pagamento
           </h2>
 

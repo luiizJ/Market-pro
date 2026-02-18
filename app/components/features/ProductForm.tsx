@@ -22,7 +22,6 @@ interface Variant {
 interface ProductFormProps {
   categories: Category[];
   initialData?: {
-    // Opcional: só vem na edição
     id: string;
     name: string;
     description: string | null;
@@ -92,10 +91,6 @@ export function ProductForm({ categories, initialData }: ProductFormProps) {
           {isEditing ? "Editar Produto" : "Novo Produto"}
         </h1>
       </div>
-
-      {/* ... (O RESTO DO JSX DO FORMULÁRIO É IDÊNTICO AO CreateProductForm) ... */}
-      {/* Apenas copie os Cards de "Dados Principais" e "Variantes" para cá */}
-      {/* ... */}
 
       <Card className="p-6 space-y-4">
         {/* Campos básicos (Nome, Descrição...) igual ao anterior */}
