@@ -1,110 +1,149 @@
 "use server";
 
+import { z } from "zod";
 import { db } from "@/app/db";
 import { orders, orderItems, variants } from "@/app/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
-import { CartItem } from "@/app/types";
+import { formatPrice } from "@/app/lib/utils";
+import { checkoutSchema } from "@/app/lib/schemas"; // O schema do cliente
 
-// Tipo dos dados do cliente (reaproveitando do Zod se quiser, ou definindo aqui)
-interface CustomerData {
-  name: string;
-  phone: string;
-  document?: string;
-  address: string;
-  paymentMethod: string;
-}
+// 1. Zod Schemas de Proteção
+const cartItemSchema = z.object({
+  productId: z.string(),
+  variantId: z.string(),
+  productName: z.string(),
+  variantName: z.string(),
+  price: z.union([z.number(), z.string()]), // Protege contra injeção de tipos
+  quantity: z.number().int().min(1, "Quantidade deve ser maior que zero"),
+  image: z.string().optional(),
+});
+
+const cartSchema = z
+  .array(cartItemSchema)
+  .min(1, "O carrinho não pode estar vazio");
+
+// Schema para proteger a rota do Admin
+const statusSchema = z.enum(["Pendente", "Entregue", "Cancelado"]);
 
 /**
- * CRIA UM NOVO PEDIDO (Transação Atômica)
+ * 🚀 CRIA UM NOVO PEDIDO
+ * (Usado tanto pelo Checkout do Cliente quanto pelo PDV do Admin)
  */
-export async function createOrder(customer: CustomerData, cart: CartItem[]) {
+export async function createOrder(data: unknown, cart: unknown) {
   try {
-    const total = cart.reduce(
-      (acc, item) => acc + item.price * item.quantity,
+    // A PORTA DE AÇO: Zod no Backend
+    const parsedData = checkoutSchema.safeParse(data);
+    const parsedCart = cartSchema.safeParse(cart);
+
+    if (!parsedData.success || !parsedCart.success) {
+      console.error("🚨 Payload bloqueado pelo Zod.");
+      return { success: false, error: "Dados inválidos fornecidos." };
+    }
+
+    const validData = parsedData.data;
+    const validCart = parsedCart.data;
+
+    // Cálculo do total 100% no servidor
+    const total = validCart.reduce(
+      (acc, item) => acc + Number(item.price) * item.quantity,
       0
     );
 
-    const result = await db.transaction(async (tx) => {
-      // 1. Cria o Pedido
+    let newOrderId;
+
+    // Transação Atômica Drizzle (Cria Pedido + Itens + Baixa Estoque)
+    await db.transaction(async (tx) => {
       const [newOrder] = await tx
         .insert(orders)
         .values({
-          customerName: customer.name,
-          customerPhone: customer.phone,
-          customerAddress: customer.address,
-          paymentMethod: customer.paymentMethod,
+          customerName: validData.name,
+          customerPhone: validData.phone,
+          customerAddress: validData.address,
+          paymentMethod: validData.paymentMethod,
           total: total.toString(),
           status: "Pendente",
         })
-        .returning({ id: orders.id });
+        .returning();
 
-      // 2. Processa os itens do carrinho
-      if (cart.length > 0) {
-        // Insere na tabela de itens do pedido
-        await tx.insert(orderItems).values(
-          cart.map((item) => ({
-            orderId: newOrder.id,
-            productName: item.productName,
-            variantName: item.variantName,
-            price: item.price.toString(),
-            quantity: item.quantity,
-            variantId: item.variantId,
-          }))
-        );
+      newOrderId = newOrder.id;
 
-        // 3. ATUALIZA O ESTOQUE (Novo Passo) 📉
-        for (const item of cart) {
-          await tx
-            .update(variants)
-            .set({
-              // SQL Puro: stock = stock - quantity
-              stock: sql`${variants.stock} - ${item.quantity}`,
-            })
-            .where(eq(variants.id, item.variantId));
-        }
+      await tx.insert(orderItems).values(
+        validCart.map((item) => ({
+          orderId: newOrder.id,
+          variantId: item.variantId,
+          productName: item.productName,
+          variantName: item.variantName,
+          price: item.price.toString(),
+          quantity: item.quantity,
+        }))
+      );
+
+      // ATUALIZA O ESTOQUE 📉
+      for (const item of validCart) {
+        await tx
+          .update(variants)
+          .set({ stock: sql`${variants.stock} - ${item.quantity}` })
+          .where(eq(variants.id, item.variantId));
       }
-
-      return newOrder;
     });
 
-    revalidatePath("/admin/dashboard");
-    revalidatePath("/admin/dashboard/products"); // Atualiza a lista de produtos no admin
-    revalidatePath("/"); // Atualiza a loja (pra ninguém comprar produto esgotado)
+    // Monta a mensagem do Zap (O Checkout usa, o Admin pode ignorar ou usar)
+    const orderRef = `#${newOrderId}`;
+    const message =
+      `*NOVO PEDIDO ${orderRef}*\n\n` +
+      `👤 *Cliente:* ${validData.name}\n` +
+      `📞 *Tel:* ${validData.phone}\n` +
+      `📍 *Endereço:* ${validData.address}\n` +
+      `💳 *Pagamento:* ${validData.paymentMethod}\n\n` +
+      `*🛒 RESUMO DO PEDIDO:*\n` +
+      validCart
+        .map((i) => `▪ ${i.quantity}x ${i.productName} (${i.variantName})`)
+        .join("\n") +
+      `\n\n💰 *TOTAL A PAGAR: ${formatPrice(total)}*`;
 
-    return { success: true, orderId: result.id };
+    // Atualiza todo o sistema para refletir o novo estoque e pedido
+    revalidatePath("/admin/dashboard");
+    revalidatePath("/admin/dashboard/products");
+    revalidatePath("/");
+
+    return {
+      success: true,
+      orderId: newOrderId,
+      whatsappMessage: message,
+    };
   } catch (error: any) {
     console.error("Erro ao criar pedido:", error);
-
-    // Tratamento de erro caso o estoque fique negativo (constraint check violation)
     if (error.code === "23514") {
       return {
         success: false,
-        error: "Estoque insuficiente para um dos itens.",
+        error: "Estoque insuficiente para este pedido.",
       };
     }
-
-    return { success: false, error: "Falha ao processar pedido" };
+    return { success: false, error: "Ocorreu um erro interno no servidor." };
   }
 }
 
 /**
- * ATUALIZA O STATUS DO PEDIDO (Admin)
+ * 🛡️ ATUALIZA O STATUS DO PEDIDO (Ação Exclusiva do Admin)
  */
 export async function updateOrderStatus(
   orderId: number,
-  newStatus: "Pendente" | "Entregue" | "Cancelado"
+  newStatusInput: unknown
 ) {
   try {
+    // Zod garantindo que o Admin não mande um status quebrado pro banco
+    const parsedStatus = statusSchema.parse(newStatusInput);
+
     await db
       .update(orders)
-      .set({ status: newStatus })
+      .set({ status: parsedStatus })
       .where(eq(orders.id, orderId));
 
-    // Atualiza a tela do painel instantaneamente
     revalidatePath("/admin/dashboard");
     return { success: true };
   } catch (error) {
-    return { success: false, error: "Erro ao atualizar status" };
+    console.error("Erro ao atualizar status:", error);
+    return { success: false, error: "Status inválido ou erro no servidor." };
   }
 }
